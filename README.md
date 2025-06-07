@@ -13,7 +13,6 @@ Il compare notamment les performances **avec et sans matières premières** en p
 - `Données_essai.xlsx` : données de prix ajustés de 30 titres (actions, obligations, matières premières)
 - `backtest.py` : script principal de simulation et d’analyse
 - `README.md` : documentation du projet
-- `requirements.txt` : liste des dépendances Python
 
 ---
 
