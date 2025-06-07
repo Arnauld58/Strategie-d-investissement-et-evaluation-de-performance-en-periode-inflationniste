@@ -1,0 +1,171 @@
+import pandas as pd
+import numpy as np
+from scipy.optimize import minimize
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+
+# 📌 Chargement des données locales
+file_path = "C:\\Users\\15819\\Downloads\\project_directory\\data\\Données_essai.xlsx" # Partie à adapter selon le répertoire
+df = pd.read_excel(file_path)
+df.rename(columns={df.columns[0]: "Date"}, inplace=True)
+df["Date"] = pd.to_datetime(df["Date"])
+df.set_index("Date", inplace=True)
+
+# 📌 Définition de la période d'analyse
+periode_normale = ("2017-01-01", "2020-01-01") # Partie à modifier selon la période à analyser
+df_filtered = df.loc[periode_inflationniste[0]:periode_inflationniste[1]]
+
+# 📌 Calcul des rendements
+rendements = df_filtered.pct_change().dropna()
+
+# 📌 Catégorisation des titres
+actions = [t for t in rendements.columns if any(x in t for x in ["AAPL", "MSFT", "KO", "PG", "JNJ", "JPM", "GS", "XOM", "CVX",
+                                                               "CAT", "NEM", "FCX", "PLD", "AMZN", "NVDA"])]
+obligations = [t for t in rendements.columns if any(x in t for x in ["TLT", "TIP", "IEF", "SHY", "HYG"])]
+matieres_premieres = [t for t in rendements.columns if t not in actions + obligations]
+
+# 📌 Remplacer les données CPI par une série factice de croissance constante (ou importer si disponible)
+cpi_returns = pd.Series(0.0002, index=rendements.index)
+
+# 📌 Fonctions d’allocation
+
+def allocation_egalitaire(returns):
+    return np.ones(returns.shape[1]) / returns.shape[1]
+
+def allocation_momentum(returns):
+    perf_12m = (returns + 1).rolling(252).apply(np.prod).iloc[-1] - 1
+    top_10 = perf_12m.nlargest(10).index
+    return np.array([1/10 if t in top_10 else 0 for t in returns.columns])
+
+def allocation_min_vol(returns):
+    cov = returns.cov()
+    def obj(w): return np.dot(w.T, np.dot(cov, w))
+    cons = {'type': 'eq', 'fun': lambda w: np.sum(w) - 1}
+    bounds = [(0, 1)] * len(returns.columns)
+    w0 = np.ones(len(returns.columns)) / len(returns.columns)
+    res = minimize(obj, w0, bounds=bounds, constraints=cons)
+    return res.x
+
+def allocation_max_sharpe(returns):
+    mu = returns.mean()
+    cov = returns.cov()
+    def neg_sharpe(w): return -np.dot(w, mu) / np.sqrt(np.dot(w.T, np.dot(cov, w)))
+    cons = {'type': 'eq', 'fun': lambda w: np.sum(w) - 1}
+    bounds = [(0, 1)] * len(mu)
+    w0 = np.ones(len(mu)) / len(mu)
+    res = minimize(neg_sharpe, w0, bounds=bounds, constraints=cons)
+    return res.x
+
+def allocation_60_30_10(returns):
+    poids = np.zeros(len(returns.columns))
+    nb_actions = sum([1 for t in returns.columns if t in actions])
+    nb_oblig = sum([1 for t in returns.columns if t in obligations])
+    nb_matiere = sum([1 for t in returns.columns if t in matieres_premieres])
+    for i, t in enumerate(returns.columns):
+        if t in actions:
+            poids[i] = 0.60 / nb_actions
+        elif t in obligations:
+            poids[i] = 0.30 / nb_oblig
+        elif t in matieres_premieres:
+            poids[i] = 0.10 / nb_matiere
+    return poids
+
+def allocation_inflation_hedged(returns):
+    correlations = returns.corrwith(cpi_returns)
+    actifs_positifs = correlations[correlations > 0]
+    if len(actifs_positifs) < 10:
+        top_corr = actifs_positifs.index
+    else:
+        top_corr = actifs_positifs.nlargest(10).index
+    low_corr = actifs_positifs.nsmallest(min(5, len(actifs_positifs))).index
+    poids = np.zeros(len(returns.columns))
+    for i, t in enumerate(returns.columns):
+        if t in top_corr:
+            poids[i] = 0.60 / len(top_corr)
+        elif t in low_corr:
+            poids[i] = 0.40 / len(low_corr)
+    return poids
+
+# 📌 Fonctions de performance
+
+def backtest(returns, weights):
+    port_returns = returns @ weights
+    cumulative = (1 + port_returns).cumprod() - 1
+    return cumulative, port_returns
+
+def calculer_metrics(r):
+    rendement = (1 + r).prod() - 1
+    vol = r.std() * np.sqrt(252)
+    sharpe = r.mean() / r.std() * np.sqrt(252) if r.std() > 0 else np.nan
+    neg_vol = r[r < 0].std() * np.sqrt(252)
+    sortino = r.mean() / neg_vol * np.sqrt(252) if neg_vol > 0 else np.nan
+    drawdown = ((1 + r).cumprod() / (1 + r).cumprod().cummax() - 1).min()
+    return {
+        "Rendement": rendement,
+        "Volatilité": vol,
+        "Sharpe": sharpe,
+        "Sortino": sortino,
+        "Max Drawdown": drawdown
+    }
+
+# 📌 Application des stratégies
+titres_sans_mp = actions + obligations
+titres_avec_mp = actions + obligations + matieres_premieres
+
+rendements_sans_mp = rendements[titres_sans_mp]
+rendements_avec_mp = rendements[titres_avec_mp]
+
+strategies = {
+    "Equal-weighted": allocation_egalitaire,
+    "Momentum": allocation_momentum,
+    "Min Volatility": allocation_min_vol,
+    "Max Sharpe Ratio": allocation_max_sharpe,
+    "60/30/10 Portfolio": allocation_60_30_10
+}
+
+resultats_cumules = {}
+metrics = {}
+
+def tester_strategie(nom, strat_func, rendements, suffixe=""):
+    w = strat_func(rendements)
+    cumul, retours = backtest(rendements, w)
+    key = f"{nom}{suffixe}"
+    resultats_cumules[key] = cumul
+    metrics[key] = calculer_metrics(retours)
+
+for nom, strat in strategies.items():
+    tester_strategie(nom, strat, rendements_sans_mp, suffixe=" (Sans MP)")
+    tester_strategie(nom, strat, rendements_avec_mp, suffixe=" (Avec MP)")
+
+tester_strategie("Inflation Hedged", allocation_inflation_hedged, rendements)
+
+# 📌 Résultats
+metrics_df = pd.DataFrame(metrics).T.sort_values("Sharpe", ascending=False)
+print(metrics_df)
+
+# 📌 Régression avec MP
+mu = rendements_avec_mp.mean()
+cov = rendements_avec_mp.cov()
+def neg_sharpe(w): return -np.dot(w, mu) / np.sqrt(np.dot(w.T, np.dot(cov, w)))
+bounds = [(0, 1)] * len(mu)
+cons = {'type': 'eq', 'fun': lambda w: np.sum(w) - 1}
+w0 = np.ones(len(mu)) / len(mu)
+res = minimize(neg_sharpe, w0, bounds=bounds, constraints=cons)
+w_opt = pd.Series(res.x, index=rendements_avec_mp.columns)
+
+r_port = rendements_avec_mp @ w_opt
+X = sm.add_constant(rendements_avec_mp[matieres_premieres])
+model = sm.OLS(r_port, X).fit()
+print(model.summary())
+
+# 📌 Graphique
+plt.figure(figsize=(14, 7))
+for nom, perf in resultats_cumules.items():
+    plt.plot(perf.index, perf, label=nom)
+plt.title("Rendements cumulés - Période 2017–2020")
+plt.xlabel("Date")
+plt.ylabel("Rendement cumulé")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
