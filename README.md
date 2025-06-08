@@ -6,6 +6,8 @@ Ce projet Python permet de tester différentes stratégies d’allocation d’ac
 
 Il compare notamment les performances **avec et sans matières premières** en période normale (2017-2020) et en période inflationniste (2020-2023), à l’aide de métriques standards (Sharpe, Sortino, volatilité, drawdown, etc.).
 
+Notre but est de trouver la stratégie optimale pour un investisseur voulant optimiser son portefeuille.
+
 ---
 
 ## 🧰 Contenu du projet
